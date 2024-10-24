@@ -12,8 +12,8 @@ const pattern = {
   startComment: /#/,
   comment: /[^\r\n]/,
   startIdentifier: /[a-zA-Z_$]/,
-  identifier: /[^\s#=(),:]/,
-  operator: /[=(),:]/,
+  identifier: /[^\s#=(){},:]/,
+  operator: /[=(){},:]/,
 };
 
 function main() {
@@ -221,7 +221,8 @@ type ExpressionNode =
   | CallNode
   | FunctionNode
   | LiteralNode
-  | IdentifierNode;
+  | IdentifierNode
+  | BlockNode;
 type BlockNode = { type: "block"; body: ASTNode[] };
 type ASTNode = BlockNode | ExpressionNode;
 
@@ -370,10 +371,23 @@ function parseLambda(state: ParseState): FunctionNode {
   });
 }
 
+function parseBlockExpression(state: ParseState): BlockNode {
+  return txn(state, (state) => {
+    parseOperator(state, { value: "{" });
+    const result = parseBlock(state);
+    parseOperator(state, { value: "}" });
+    return result;
+  });
+}
+
 function parseExpression(state: ParseState): ExpressionNode {
   return txn(state, (state) => {
     try {
       return parseComment(state);
+    } catch {}
+
+    try {
+      return parseBlockExpression(state);
     } catch {}
 
     try {

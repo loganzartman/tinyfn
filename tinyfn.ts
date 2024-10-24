@@ -12,20 +12,35 @@ const pattern = {
   startComment: /#/,
   comment: /[^\r\n]/,
   startIdentifier: /[a-zA-Z_$]/,
-  identifier: /[^\s#()]/,
+  identifier: /[^\s#=(),]/,
   operator: /[=(),]/,
 };
 
+const src = `
+a = 1
+print(a)
+b = 2
+print(b)
+print(add(a, b))
+`;
+
 function main() {
-  const src = fs.readFileSync(process.stdin.fd, "utf-8");
-  run(src);
+  // const src = fs.readFileSync(process.stdin.fd, "utf-8");
+  run(src, {
+    globals: {
+      print: (x: unknown) => console.log(x),
+      add: (a: number, b: number) => a + b,
+    },
+  });
 }
 
-function run(src: string) {
+function run(src: string, { globals = {} } = {}) {
   const tokens = tokenize(src);
   console.log({ tokens });
   const ast = parse({ tokens });
   console.log(JSON.stringify(ast, null, 2));
+  const result = evalNode(ast, { globals });
+  console.log({ result, globals });
 }
 
 type BaseToken = {
@@ -196,8 +211,8 @@ type LiteralNode = {
   type: "literal";
   value: boolean | string | number | bigint;
 };
-type IdentifierNode = { type: "identifier"; value: string };
-type OperatorNode = { type: "operator"; value: string };
+type IdentifierNode = { type: "identifier"; name: string };
+type OperatorNode = { type: "operator"; name: string };
 type AssignmentNode = {
   type: "assignment";
   name: IdentifierNode;
@@ -209,11 +224,10 @@ type ASTNode = BlockNode | ExpressionNode;
 
 type ParseState = { tokens: Token[]; i: number };
 
-function txn<T>(state: ParseState, fn: (state: ParseState) => T): T {
-  const clonedState: ParseState = { tokens: state.tokens, i: state.i };
+function txn<S extends object, T>(state: S, fn: (state: S) => T): T {
+  const clonedState = Object.assign({}, state);
   const result = fn(clonedState);
-  state.tokens = clonedState.tokens;
-  state.i = clonedState.i;
+  Object.assign(state, clonedState);
   return result;
 }
 
@@ -223,13 +237,16 @@ function parseIdentifier(
 ): IdentifierNode {
   return txn(state, (state) => {
     const token = state.tokens[state.i++];
+    if (!token) {
+      throw new ParseError("Expected indentifier before end of input");
+    }
     if (token.type !== "identifier") {
       throw new ParseError("Expected identifier", token);
     }
     if (opts.value !== undefined && token.value !== opts.value) {
       throw new ParseError(`Expected identifier ${opts.value}`, token);
     }
-    return { type: "identifier", value: token.value };
+    return { type: "identifier", name: token.value };
   });
 }
 
@@ -239,13 +256,16 @@ function parseOperator(
 ): OperatorNode {
   return txn(state, (state) => {
     const token = state.tokens[state.i++];
+    if (!token) {
+      throw new ParseError("Expected operator before end of input");
+    }
     if (token.type !== "operator") {
       throw new ParseError("Expected operator", token);
     }
     if (opts.value !== undefined && token.value !== opts.value) {
       throw new ParseError(`Expected operator ${opts.value}`, token);
     }
-    return { type: "operator", value: token.value };
+    return { type: "operator", name: token.value };
   });
 }
 
@@ -255,6 +275,9 @@ function parseLiteral(
 ): LiteralNode {
   return txn(state, (state) => {
     const token = state.tokens[state.i++];
+    if (!token) {
+      throw new ParseError("Expected literal before end of input");
+    }
     if (!["boolean", "integer", "float", "string"].includes(token.type)) {
       throw new ParseError("Expected literal", token);
     }
@@ -289,7 +312,9 @@ function parseCall(state: ParseState): CallNode {
       try {
         args.push(parseExpression(state));
         parseOperator(state, { value: "," });
-      } catch {}
+      } catch {
+        break;
+      }
     }
 
     parseOperator(state, { value: ")" });
@@ -328,12 +353,7 @@ function parseBlock(state: ParseState): BlockNode {
   return txn(state, (state) => {
     const body: ASTNode[] = [];
     while (state.i < state.tokens.length) {
-      try {
-        body.push(parseExpression(state));
-        continue;
-      } catch {}
-
-      throw new ParseError("Expected expression", state.tokens[state.i]);
+      body.push(parseExpression(state));
     }
 
     return {
@@ -347,6 +367,29 @@ function parse({ tokens }: { tokens: ParseState["tokens"] }): ASTNode {
   return parseBlock({ tokens, i: 0 });
 }
 
+type EvalState = { globals: { [k: string]: unknown } };
+
+function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
+  switch (node.type) {
+    case "assignment":
+      return (state.globals[node.name.name] = evalNode(node.value, state));
+    case "block":
+      return node.body.map((statement) => evalNode(statement, state)).at(-1);
+    case "call":
+      const fn = state.globals[node.name.name];
+      if (typeof fn !== "function") {
+        throw new EvalError(`Cannot call non-function ${node.name.name}`, node);
+      }
+      return fn(...node.args.map((arg) => evalNode(arg, state)));
+    case "identifier":
+      return state.globals[node.name];
+    case "literal":
+      return node.value;
+    default:
+      throw new EvalError(`Cannot eval node of type ${node.type}`, node);
+  }
+}
+
 class UnexpectedTokenError extends Error {
   constructor(src: string, index: number) {
     super(`Unexpected token at ${index}: ${src.slice(index)}`);
@@ -354,10 +397,20 @@ class UnexpectedTokenError extends Error {
 }
 
 class ParseError extends Error {
-  constructor(message: string, token: BaseToken) {
-    super(
-      `Parse error at ${token.start}: ${message}\n${token.src.slice(token.start, token.end)}`,
-    );
+  constructor(message: string, token?: BaseToken) {
+    if (!token) {
+      super(`Parse error: ${message}`);
+    } else {
+      super(
+        `Parse error at ${token.start}: ${message}\n${token.src.slice(token.start, token.end)}`,
+      );
+    }
+  }
+}
+
+class EvalError extends Error {
+  constructor(message: string, node: ASTNode) {
+    super(`Eval error at ${JSON.stringify(node)}: ${message}`);
   }
 }
 

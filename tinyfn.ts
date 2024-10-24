@@ -16,22 +16,15 @@ const pattern = {
   operator: /[=(),:]/,
 };
 
-const src = `
-a = 1
-print(a)
-b = 2
-print(b)
-print(add(a, b))
-plus = (a, b) : add(a, b)
-print(plus(a, b))
-`;
-
 function main() {
-  // const src = fs.readFileSync(process.stdin.fd, "utf-8");
+  const src = fs.readFileSync(process.stdin.fd, "utf-8");
   run(src, {
     globals: {
       print: (x: unknown) => console.log(x),
       add: (a: number, b: number) => a + b,
+      lt: (a: number, b: number) => a < b,
+      if: (cond: boolean, then: () => void, else_: () => void) =>
+        cond ? then() : else_(),
     },
   });
 }
@@ -208,7 +201,7 @@ function tokenize(src: string): Token[] {
   return result;
 }
 
-type BlockNode = { type: "block"; body: ASTNode[] };
+type CommentNode = { type: "comment"; value: string };
 type LiteralNode = {
   type: "literal";
   value: boolean | string | number | bigint;
@@ -223,11 +216,13 @@ type AssignmentNode = {
 type CallNode = { type: "call"; name: IdentifierNode; args: ASTNode[] };
 type FunctionNode = { type: "function"; args: IdentifierNode[]; body: ASTNode };
 type ExpressionNode =
+  | CommentNode
   | AssignmentNode
   | CallNode
   | FunctionNode
   | LiteralNode
   | IdentifierNode;
+type BlockNode = { type: "block"; body: ASTNode[] };
 type ASTNode = BlockNode | ExpressionNode;
 
 type ParseState = { tokens: Token[]; i: number };
@@ -237,6 +232,19 @@ function txn<S extends object, T>(state: S, fn: (state: S) => T): T {
   const result = fn(clonedState);
   Object.assign(state, clonedState);
   return result;
+}
+
+function parseComment(state: ParseState): CommentNode {
+  return txn(state, (state) => {
+    const token = state.tokens[state.i++];
+    if (!token) {
+      throw new ParseError("Expected comment before end of input");
+    }
+    if (token.type !== "comment") {
+      throw new ParseError("Expected comment", token);
+    }
+    return { type: "comment", value: token.value };
+  });
 }
 
 function parseIdentifier(
@@ -365,6 +373,10 @@ function parseLambda(state: ParseState): FunctionNode {
 function parseExpression(state: ParseState): ExpressionNode {
   return txn(state, (state) => {
     try {
+      return parseComment(state);
+    } catch {}
+
+    try {
       return parseAssignment(state);
     } catch {}
 
@@ -410,6 +422,8 @@ type EvalState = { globals: { [k: string]: unknown } };
 
 function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
   switch (node.type) {
+    case "comment":
+      break;
     case "assignment":
       return (state.globals[node.name.name] = evalNode(node.value, state));
     case "block":

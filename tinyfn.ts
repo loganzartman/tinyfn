@@ -12,8 +12,8 @@ const pattern = {
   startComment: /#/,
   comment: /[^\r\n]/,
   startIdentifier: /[a-zA-Z_$]/,
-  identifier: /[^\s#=(),]/,
-  operator: /[=(),]/,
+  identifier: /[^\s#=(),:]/,
+  operator: /[=(),:]/,
 };
 
 const src = `
@@ -22,6 +22,8 @@ print(a)
 b = 2
 print(b)
 print(add(a, b))
+plus = (a, b) : add(a, b)
+print(plus(a, b))
 `;
 
 function main() {
@@ -219,7 +221,13 @@ type AssignmentNode = {
   value: ASTNode;
 };
 type CallNode = { type: "call"; name: IdentifierNode; args: ASTNode[] };
-type ExpressionNode = AssignmentNode | CallNode | LiteralNode | IdentifierNode;
+type FunctionNode = { type: "function"; args: IdentifierNode[]; body: ASTNode };
+type ExpressionNode =
+  | AssignmentNode
+  | CallNode
+  | FunctionNode
+  | LiteralNode
+  | IdentifierNode;
 type ASTNode = BlockNode | ExpressionNode;
 
 type ParseState = { tokens: Token[]; i: number };
@@ -327,6 +335,33 @@ function parseCall(state: ParseState): CallNode {
   });
 }
 
+function parseLambda(state: ParseState): FunctionNode {
+  return txn(state, (state) => {
+    parseOperator(state, { value: "(" });
+
+    const args: IdentifierNode[] = [];
+    while (state.i < state.tokens.length) {
+      try {
+        args.push(parseIdentifier(state));
+        parseOperator(state, { value: "," });
+      } catch {
+        break;
+      }
+    }
+
+    parseOperator(state, { value: ")" });
+    parseOperator(state, { value: ":" });
+
+    const body = parseExpression(state);
+
+    return {
+      type: "function",
+      args,
+      body,
+    };
+  });
+}
+
 function parseExpression(state: ParseState): ExpressionNode {
   return txn(state, (state) => {
     try {
@@ -335,6 +370,10 @@ function parseExpression(state: ParseState): ExpressionNode {
 
     try {
       return parseCall(state);
+    } catch {}
+
+    try {
+      return parseLambda(state);
     } catch {}
 
     try {
@@ -381,6 +420,14 @@ function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
         throw new EvalError(`Cannot call non-function ${node.name.name}`, node);
       }
       return fn(...node.args.map((arg) => evalNode(arg, state)));
+    case "function":
+      return function lambda(...args: unknown[]) {
+        const newGlobals = { ...state.globals };
+        node.args.forEach((arg, i) => {
+          newGlobals[arg.name] = args[i];
+        });
+        return evalNode(node.body, { globals: newGlobals });
+      };
     case "identifier":
       return state.globals[node.name];
     case "literal":

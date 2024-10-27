@@ -1,4 +1,4 @@
-hello = () : { print("Hello, World!") }
+hello = () => { print("Hello, World!") }
 
 print("Test")
 hello()

@@ -23,7 +23,7 @@ const tokenPatterns = [
   ["string", /^(['"])((?:\\.|(?!\1).)*)\1/],
   ["comment", /^#[^\r\n]*/],
   ["identifier", /^[a-zA-Z$_][a-zA-Z0-9$_]*/],
-  ["operator", /^[=(){},:]/],
+  ["operator", /^=>|[=(){},]/],
 ] as const;
 
 function main() {
@@ -497,7 +497,7 @@ function parseLambda(state: ParseState): FunctionNode {
     }
 
     parseOperator(state, { value: ")" });
-    parseOperator(state, { value: ":" });
+    parseOperator(state, { value: "=>" });
 
     const body = parseExpression(state);
 

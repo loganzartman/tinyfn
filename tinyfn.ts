@@ -18,12 +18,12 @@ const tokenPatterns = [
   ["newline", /^(?:\r\n|\r|\n)/],
   ["whitespace", /^[ \t]+/],
   ["boolean", /^(?:true|false)/],
-  ["float", /^(?:[0-9]*\.[0-9]+|[0-9]+\.)/],
-  ["integer", /^[0-9]+/],
+  ["float", /^(?:-?\d*\.\d+|-?\d+\.)(?:e\d+)?/],
+  ["integer", /^-?\d+/],
   ["string", /^(['"])((?:\\.|(?!\1).)*)\1/],
   ["comment", /^#[^\r\n]*/],
-  ["identifier", /^[a-zA-Z$_][a-zA-Z0-9$_]*/],
-  ["operator", /^=>|[=(){},]/],
+  ["identifier", /^\p{XID_Start}\p{XID_Continue}*/u],
+  ["operator", /^(?:=>|[=(){},])/],
 ] as const;
 
 function main() {

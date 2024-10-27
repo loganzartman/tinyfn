@@ -1,0 +1,4 @@
+hello = () : { print("Hello, World!") }
+
+print("Test")
+hello()

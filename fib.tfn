@@ -1,0 +1,11 @@
+fib = (i) => {
+  result = if (
+    i < 2,
+    () => i,
+    () => fib(i - 1) + fib(i - 2)
+  );
+  result;
+};
+
+print('fib(8) = ');
+print(fib(8));

@@ -15,33 +15,43 @@ function debug(msg: string | (() => string)) {
 }
 
 const tokenPatterns = [
-  ["newline", /^(?:\r\n|\r|\n)/],
-  ["whitespace", /^[ \t]+/],
   ["boolean", /^(?:true|false)/],
-  ["float", /^(?:-?\d*\.\d+|-?\d+\.)(?:e\d+)?/],
-  ["integer", /^-?\d+/],
-  ["string", /^(['"])((?:\\.|(?!\1).)*)\1/],
   ["comment", /^#[^\r\n]*/],
+  ["float", /^(?:-?\d*\.\d+|-?\d+\.)(?:e\d+)?/],
   ["identifier", /^\p{XID_Start}\p{XID_Continue}*/u],
-  ["operator", /^(?:=>|[=(){},])/],
+  ["integer", /^-?\d+/],
+  ["newline", /^(?:\r\n|\r|\n)/],
+  ["operator", /^(?:=>|==|<=|>=|[,+\-*/<>=(){};])/],
+  ["string", /^(['"])((?:\\.|(?!\1).)*)\1/],
+  ["whitespace", /^[ \t]+/],
 ] as const;
 
 function main() {
   const src = fs.readFileSync(process.stdin.fd, "utf-8");
+  const globals = {
+    print: (x: unknown) => console.log(x),
+    add: (a: number, b: number) => a + b,
+    "+": (a: number, b: number) => a + b,
+    "-": (a: number, b: number) => a - b,
+    "*": (a: number, b: number) => a * b,
+    "/": (a: number, b: number) => a / b,
+    "<": (a: number, b: number) => a < b,
+    "<=": (a: number, b: number) => a > b,
+    ">": (a: number, b: number) => a > b,
+    ">=": (a: number, b: number) => a >= b,
+    "==": (a: number, b: number) => a === b,
+    "!=": (a: number, b: number) => a !== b,
+    if: (cond: boolean, then: () => void, else_: () => void) =>
+      cond ? then() : else_(),
+  };
+
   try {
-    run(src, {
-      globals: {
-        print: (x: unknown) => console.log(x),
-        add: (a: number, b: number) => a + b,
-        lt: (a: number, b: number) => a < b,
-        if: (cond: boolean, then: () => void, else_: () => void) =>
-          cond ? then() : else_(),
-      },
-    });
+    run(src, { globals });
   } catch (e) {
     if (e instanceof ErrorWithSource) {
       console.error(e.message);
       debug(e.stack!);
+      debug(JSON.stringify({ globals }, null, 2));
       process.exit(1);
     } else {
       throw e;
@@ -51,10 +61,13 @@ function main() {
 
 function run(src: string, { globals = {} } = {}) {
   const tokens = tokenize(src);
-  debug("tokens");
+  debug("▒▒▒ tokens ▒▒▒");
   debug(() => tokens.map(formatToken).join("\n"));
+  debug("▒▒▒ parsing ▒▒▒");
   const ast = parse({ tokens });
-  debug(() => JSON.stringify(ast, null, 2));
+  debug("▒▒▒ AST ▒▒▒");
+  debug(() => JSON.stringify(ast, (k, v) => (k === "loc" ? undefined : v), 2));
+  debug("▒▒▒ evaling ▒▒▒");
   const result = evalNode(ast, { globals });
   debug(() => JSON.stringify({ globals }, null, 2));
   console.log(result);
@@ -72,14 +85,22 @@ type BaseToken = {
 
 type Token = BaseToken &
   (
-    | { type: "literal"; value: boolean | number | bigint | string }
-    | { type: "identifier"; value: string }
-    | { type: "operator"; value: string }
     | { type: "comment"; value: string }
+    | { type: "identifier"; value: string }
+    | { type: "literal"; value: boolean | number | bigint | string }
+    | { type: "operator"; value: string }
+    | { type: "arrow"; value: string }
+    | { type: "assign"; value: string }
+    | { type: "semicolon"; value: string }
+    | { type: "bracket"; value: string }
   );
 
 function getSourceLine(src: string, line: number): string {
-  return src.split(/\r\n|\r|\n/g)[line - 1];
+  const result = src.split(/\r\n|\r|\n/g)[line - 1];
+  if (result === undefined) {
+    throw new Error(`internal error: line ${line} out of range`);
+  }
+  return result;
 }
 
 type ErrorWithSourceParams = {
@@ -94,8 +115,7 @@ class ErrorWithSource extends Error {
 
   constructor(args: ErrorWithSourceParams) {
     const lineCol = `line ${args.line}: `;
-    const caret =
-      " ".repeat(lineCol.length + args.col - 1) + "^".repeat(args.length ?? 1);
+    const caret = `${" ".repeat(lineCol.length + args.col - 1)}\x1b[31m${"^".repeat(args.length ?? 1)}\x1b[0m`;
     super(dedent`
       ${args.message ?? "Error:"}
       ${lineCol}${getSourceLine(args.src, args.line)}
@@ -124,7 +144,7 @@ function tokenize(src: string): Token[] {
       return [];
     });
 
-    if (!matches.length) {
+    if (!matches[0]) {
       throw new UnexpectedTokenError({ src, line, col });
     }
 
@@ -147,33 +167,11 @@ function tokenize(src: string): Token[] {
     col += length;
 
     switch (longest.type) {
+      case "whitespace":
+        break;
       case "newline": {
         line++;
         col = 1;
-        break;
-      }
-      case "comment": {
-        result.push({
-          ...base,
-          type: "comment",
-          value: longest.match[0],
-        });
-        break;
-      }
-      case "identifier": {
-        result.push({
-          ...base,
-          type: "identifier",
-          value: longest.match[0],
-        });
-        break;
-      }
-      case "operator": {
-        result.push({
-          ...base,
-          type: "operator",
-          value: longest.match[0],
-        });
         break;
       }
       case "boolean": {
@@ -205,15 +203,27 @@ function tokenize(src: string): Token[] {
         break;
       }
       case "string": {
+        const value = longest.match[2];
+        if (typeof value !== "string") {
+          throw new Error("internal error: string match group is not a string");
+        }
         result.push({
           ...base,
           type: "literal",
-          value: longest.match[2],
+          value,
         });
         break;
       }
-      case "whitespace":
+      case "comment":
+      case "identifier":
+      case "operator": {
+        result.push({
+          ...base,
+          type: longest.type,
+          value: longest.match[0],
+        });
         break;
+      }
       default:
         impossible(longest.type, "Invalid token type");
     }
@@ -244,7 +254,7 @@ function nodeLocationFromToken(token: BaseToken): NodeLocation {
 }
 
 function mergeNodeLocations(...locations: Array<NodeLocation>): NodeLocation {
-  if (locations.length === 0) {
+  if (!locations[0]) {
     throw new Error(
       "internal error: mergeNodeLocations expects at least 1 location",
     );
@@ -289,7 +299,7 @@ type AssignmentNode = BaseNode & {
 };
 type CallNode = BaseNode & {
   type: "call";
-  name: IdentifierNode;
+  name: IdentifierNode | OperatorNode;
   args: ASTNode[];
 };
 type FunctionNode = BaseNode & {
@@ -297,16 +307,14 @@ type FunctionNode = BaseNode & {
   args: IdentifierNode[];
   body: ASTNode;
 };
-type BlockNode = BaseNode & { type: "block"; body: ASTNode[] };
-type ExpressionNode =
-  | CommentNode
-  | AssignmentNode
-  | CallNode
-  | FunctionNode
-  | LiteralNode
-  | IdentifierNode
-  | BlockNode;
-type ASTNode = BlockNode | ExpressionNode;
+type StatementListNode = BaseNode & {
+  type: "statementList";
+  statements: ASTNode[];
+};
+type BlockNode = BaseNode & { type: "block"; body: StatementListNode };
+type TermNode = CallNode | LiteralNode | IdentifierNode | BlockNode;
+type ExpressionNode = CommentNode | AssignmentNode | FunctionNode | TermNode;
+type ASTNode = StatementListNode | ExpressionNode;
 
 type ParseState = { tokens: Token[]; i: number };
 
@@ -322,25 +330,137 @@ class ParseError extends ErrorWithSource {
   }
 }
 
-function txn<S extends object, T>(state: S, fn: (state: S) => T): T {
-  const clonedState = Object.assign({}, state);
-  const result = fn(clonedState);
-  Object.assign(state, clonedState);
+let txnDepth = 0;
+function txn<S extends object, T>(
+  debugName: string,
+  state: S,
+  fn: (state: S) => T,
+): T {
+  try {
+    debug(`${"  ".repeat(txnDepth)}${debugName}`);
+    ++txnDepth;
+    const clonedState = Object.assign({}, state);
+    const result = fn(clonedState);
+    Object.assign(state, clonedState);
+    return result;
+  } finally {
+    --txnDepth;
+  }
+}
+
+function parse({ tokens }: { tokens: ParseState["tokens"] }): ASTNode {
+  const state = { tokens, i: 0 };
+  const result = parseStatementList(state);
+  if (state.i < tokens.length) {
+    throw new ParseError({
+      message: "Unexpected token",
+      token: tokens[state.i]!,
+    });
+  }
   return result;
 }
 
-function parseComment(state: ParseState): CommentNode {
-  return txn(state, (state) => {
-    const token = state.tokens[state.i++];
+function parseOneOf<
+  TResult,
+  TParsers extends Array<(state: ParseState) => TResult>,
+>(state: ParseState, ...parsers: TParsers): TResult {
+  return txn("parseOneOf", state, (state) => {
+    const token = state.tokens[state.i];
     if (!token) {
       throw new ParseError({
-        message: "Expected comment before end of input",
-        token,
+        message: "Expected token before end of input",
+        token: state.tokens[state.i - 1]!,
       });
     }
-    if (token.type !== "comment") {
-      throw new ParseError({ message: "Expected comment", token });
+    for (const parse of parsers) {
+      try {
+        const result = parse(state);
+        debug(`[parseOneOf] MATCHED ${parse.name}`);
+        return result;
+      } catch (e) {
+        if (e instanceof ParseError) {
+          continue;
+        }
+        throw e;
+      }
     }
+    const expectedTypes = parsers.map((parser) =>
+      parser.name.replace(/^parse/, ""),
+    );
+    throw new ParseError({
+      message: `Expected one of ${expectedTypes.join(", ")}`,
+      token,
+    });
+  });
+}
+
+type TokenMatcher<TToken> = {
+  [key in keyof TToken]?: TToken[key] extends string
+    ? TToken[key] | RegExp
+    : TToken[key];
+};
+
+type TokenMatcherByType<TType extends Token["type"]> = TokenMatcher<
+  Extract<Token, { type: TType }>
+>;
+
+function takeToken<
+  TType extends Token["type"],
+  TResult = Extract<Token, { type: TType }>,
+>({
+  state,
+  type,
+  match,
+}: {
+  state: ParseState;
+  type: TType;
+  match?: TokenMatcherByType<TType>;
+}): TResult {
+  const token = state.tokens[state.i];
+  if (!token) {
+    throw new ParseError({
+      message: "Expected token before end of input",
+      token: state.tokens[state.i - 1]!,
+    });
+  }
+  if (token.type !== type) {
+    throw new ParseError({
+      message: `Expected token with type ${type} but got ${token.type}`,
+      token,
+    });
+  }
+  if (match) {
+    for (const key in match) {
+      const tokenVal =
+        key in token ? token[key as keyof typeof token] : undefined;
+
+      const matcher = match[key as keyof typeof match];
+
+      if (matcher instanceof RegExp) {
+        if (typeof tokenVal !== "string" || !matcher.test(tokenVal)) {
+          throw new ParseError({
+            message: `Expected token with ${key} matching ${matcher} but got ${tokenVal}`,
+            token,
+          });
+        }
+      } else if (tokenVal !== matcher) {
+        throw new ParseError({
+          message: `Expected token with ${key}=${matcher} but got ${tokenVal}`,
+          token,
+        });
+      }
+    }
+  }
+  state.i += 1;
+  return token as TResult;
+}
+
+function parseComment(
+  state: ParseState,
+  match?: TokenMatcherByType<"comment">,
+): CommentNode {
+  return txn(`parseComment ${JSON.stringify(match)}`, state, (state) => {
+    const token = takeToken({ state, type: "comment", match });
     return {
       type: "comment",
       value: token.value,
@@ -351,25 +471,10 @@ function parseComment(state: ParseState): CommentNode {
 
 function parseIdentifier(
   state: ParseState,
-  opts: { value?: string } = {},
+  match?: TokenMatcherByType<"identifier">,
 ): IdentifierNode {
-  return txn(state, (state) => {
-    const token = state.tokens[state.i++];
-    if (!token) {
-      throw new ParseError({
-        message: "Expected indentifier before end of input",
-        token,
-      });
-    }
-    if (token.type !== "identifier") {
-      throw new ParseError({ message: "Expected identifier", token });
-    }
-    if (opts.value !== undefined && token.value !== opts.value) {
-      throw new ParseError({
-        message: `Expected identifier ${opts.value}`,
-        token,
-      });
-    }
+  return txn(`parseIdentifier ${JSON.stringify(match)}`, state, (state) => {
+    const token = takeToken({ state, type: "identifier", match });
     return {
       type: "identifier",
       name: token.value,
@@ -380,25 +485,10 @@ function parseIdentifier(
 
 function parseOperator(
   state: ParseState,
-  opts: { value?: string } = {},
+  match?: TokenMatcherByType<"operator">,
 ): OperatorNode {
-  return txn(state, (state) => {
-    const token = state.tokens[state.i++];
-    if (!token) {
-      throw new ParseError({
-        message: "Expected operator before end of input",
-        token,
-      });
-    }
-    if (token.type !== "operator") {
-      throw new ParseError({ message: "Expected operator", token });
-    }
-    if (opts.value !== undefined && token.value !== opts.value) {
-      throw new ParseError({
-        message: `Expected operator ${opts.value}`,
-        token,
-      });
-    }
+  return txn(`parseOperator ${JSON.stringify(match)}`, state, (state) => {
+    const token = takeToken({ state, type: "operator", match });
     return {
       type: "operator",
       name: token.value,
@@ -409,25 +499,10 @@ function parseOperator(
 
 function parseLiteral(
   state: ParseState,
-  opts: { value?: boolean | number | bigint | string } = {},
+  match?: TokenMatcherByType<"literal">,
 ): LiteralNode {
-  return txn(state, (state) => {
-    const token = state.tokens[state.i++];
-    if (!token) {
-      throw new ParseError({
-        message: "Expected literal before end of input",
-        token,
-      });
-    }
-    if (token.type !== "literal") {
-      throw new ParseError({ message: "Expected literal", token });
-    }
-    if (opts.value !== undefined && token.value !== opts.value) {
-      throw new ParseError({
-        message: `Expected literal with value ${opts.value}`,
-        token,
-      });
-    }
+  return txn(`parseLiteral ${JSON.stringify(match)}`, state, (state) => {
+    const token = takeToken({ state, type: "literal", match });
     return {
       type: "literal",
       value: token.value,
@@ -437,8 +512,7 @@ function parseLiteral(
 }
 
 function parseAssignment(state: ParseState): AssignmentNode {
-  return txn(state, (state) => {
-    debug("parseAssignment");
+  return txn("parseAssignment", state, (state) => {
     const name = parseIdentifier(state);
     const assign = parseOperator(state, { value: "=" });
     const value = parseExpression(state);
@@ -452,8 +526,7 @@ function parseAssignment(state: ParseState): AssignmentNode {
 }
 
 function parseCall(state: ParseState): CallNode {
-  debug("parseCall");
-  return txn(state, (state) => {
+  return txn("parseCall", state, (state) => {
     const name = parseIdentifier(state);
 
     parseOperator(state, { value: "(" });
@@ -481,8 +554,7 @@ function parseCall(state: ParseState): CallNode {
 }
 
 function parseLambda(state: ParseState): FunctionNode {
-  debug("parseLambda");
-  return txn(state, (state) => {
+  return txn("parseLambda", state, (state) => {
     const openParen = parseOperator(state, { value: "(" });
 
     const args: IdentifierNode[] = [];
@@ -510,109 +582,97 @@ function parseLambda(state: ParseState): FunctionNode {
   });
 }
 
-function parseBlockExpression(state: ParseState): BlockNode {
-  return txn(state, (state) => {
-    debug("parseBlockExpression");
+function parseBlock(state: ParseState): BlockNode {
+  return txn("parseBlock", state, (state) => {
     const openBrace = parseOperator(state, { value: "{" });
-    const result = parseBlock(state);
+    const body = parseStatementList(state);
     const closeBrace = parseOperator(state, { value: "}" });
     return {
-      ...result,
+      type: "block",
+      body,
       loc: mergeNodeLocations(openBrace.loc, closeBrace.loc),
     };
   });
 }
 
-function parseExpression(state: ParseState): ExpressionNode {
-  return txn(state, (state) => {
-    debug("parseExpression");
-    try {
-      return parseComment(state);
-    } catch (e) {
-      debug(`[parseExpression] not comment: ${(e as Error).message}`);
-    }
-
-    try {
-      return parseBlockExpression(state);
-    } catch (e) {
-      debug(`[parseExpression] not block: ${(e as Error).message}`);
-    }
-
-    try {
-      return parseAssignment(state);
-    } catch (e) {
-      debug(`[parseExpression] not assignment: ${(e as Error).message}`);
-    }
-
-    try {
-      return parseLambda(state);
-    } catch (e) {
-      debug(`[parseExpression] not lambda: ${(e as Error).message}`);
-    }
-
-    try {
-      return parseCall(state);
-    } catch (e) {
-      debug(`[parseExpression] not call: ${(e as Error).message}`);
-    }
-
-    try {
-      return parseIdentifier(state);
-    } catch (e) {
-      debug(`[parseExpression] not identifier: ${(e as Error).message}`);
-    }
-
-    try {
-      return parseLiteral(state);
-    } catch (e) {
-      debug(`[parseExpression] not literal: ${(e as Error).message}`);
-    }
-
-    throw new ParseError({
-      message: "Expected expression",
-      token: state.tokens[state.i],
-    });
+function parseTerm(state: ParseState): TermNode {
+  return txn("parseTerm", state, (state) => {
+    return parseOneOf(
+      state,
+      parseCall,
+      parseBlock,
+      parseLiteral,
+      parseIdentifier,
+    );
   });
 }
 
-function parseBlock(state: ParseState): BlockNode {
-  return txn(state, (state) => {
-    const body: ASTNode[] = [];
+function parseBinop(state: ParseState): CallNode {
+  return txn("parseBinop", state, (state) => {
+    const left = parseTerm(state);
+    const name = parseOperator(state, { value: /^(?:==|<=|>=|[+\-*/<>])/ });
+    const right = parseExpression(state);
+
+    return {
+      type: "call",
+      name: {
+        type: "identifier",
+        name: name.name,
+        loc: name.loc,
+      },
+      args: [left, right],
+      loc: mergeNodeLocations(left.loc, right.loc),
+    };
+  });
+}
+
+function parseExpression(state: ParseState): ExpressionNode {
+  return txn("parseExpression", state, (state) => {
+    return parseOneOf(
+      state,
+      parseComment,
+      parseAssignment,
+      parseLambda,
+      parseBinop,
+      parseTerm,
+    );
+  });
+}
+
+function parseStatementList(state: ParseState): StatementListNode {
+  return txn("parseStatementList", state, (state) => {
+    const statements: ASTNode[] = [];
     while (state.i < state.tokens.length) {
       try {
-        body.push(parseExpression(state));
+        statements.push(parseExpression(state));
+        parseOperator(state, { value: ";" });
       } catch (e) {
-        debug(`[parseBlock] end of block: ${(e as Error).message}`);
-        break;
+        if (e instanceof ParseError) {
+          break;
+        }
+        throw e;
       }
     }
 
-    if (body.length > 0) {
-      return {
-        type: "block",
-        body,
-        loc: mergeNodeLocations(body[0].loc, body.at(-1)!.loc),
-      };
-    } else {
-      return {
-        type: "block",
-        body: [],
-        loc: {
-          src: "<none>",
-          start: 0,
-          length: 0,
-          col0: 0,
-          col1: 0,
-          line0: 0,
-          line1: 0,
-        },
-      };
+    let loc = {
+      src: "<none>",
+      start: 0,
+      length: 0,
+      col0: 0,
+      col1: 0,
+      line0: 0,
+      line1: 0,
+    };
+    if (statements[0]) {
+      loc = mergeNodeLocations(statements[0].loc, statements.at(-1)!.loc);
     }
-  });
-}
 
-function parse({ tokens }: { tokens: ParseState["tokens"] }): ASTNode {
-  return parseBlock({ tokens, i: 0 });
+    return {
+      type: "statementList",
+      statements,
+      loc,
+    };
+  });
 }
 
 type EvalState = { globals: { [k: string]: unknown } };
@@ -636,7 +696,9 @@ function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
     case "assignment":
       return (state.globals[node.name.name] = evalNode(node.value, state));
     case "block":
-      return node.body.map((statement) => evalNode(statement, state)).at(-1);
+      return evalNode(node.body, state);
+    case "statementList":
+      return node.statements.map((s) => evalNode(s, state)).at(-1);
     case "call":
       const fn = state.globals[node.name.name];
       if (typeof fn !== "function") {
@@ -645,11 +707,15 @@ function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
       return fn(...node.args.map((arg) => evalNode(arg, state)));
     case "function":
       return function lambda(...args: unknown[]) {
-        const newGlobals = { ...state.globals };
-        node.args.forEach((arg, i) => {
-          newGlobals[arg.name] = args[i];
+        return txn("function", state.globals, (globals) => {
+          args.forEach((arg, i) => {
+            const param = node.args[i];
+            if (param) {
+              globals[param.name] = arg;
+            }
+          });
+          return evalNode(node.body, { globals });
         });
-        return evalNode(node.body, { globals: newGlobals });
       };
     case "identifier":
       return state.globals[node.name];

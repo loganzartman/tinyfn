@@ -21,7 +21,7 @@ const tokenPatterns = [
   ["identifier", /^\p{XID_Start}\p{XID_Continue}*/u],
   ["integer", /^-?\d+/],
   ["newline", /^(?:\r\n|\r|\n)/],
-  ["operator", /^(?:=>|==|<=|>=|[,+\-*/<>=(){};])/],
+  ["operator", /^(?:=>|==|<=|>=|[,+\-*/<>=()\[\]{};])/],
   ["string", /^(['"])((?:\\.|(?!\1).)*)\1/],
   ["whitespace", /^[ \t]+/],
 ] as const;
@@ -43,6 +43,9 @@ function main() {
     "!=": (a: number, b: number) => a !== b,
     if: (cond: boolean, then: () => void, else_: () => void) =>
       cond ? then() : else_(),
+    push: (arr: unknown[], x: unknown) => arr.push(x),
+    pop: (arr: unknown[]) => arr.pop(),
+    get: (obj: object, k: string | number) => obj[k as keyof typeof obj],
   };
 
   try {
@@ -312,7 +315,8 @@ type StatementListNode = BaseNode & {
   statements: ASTNode[];
 };
 type BlockNode = BaseNode & { type: "block"; body: StatementListNode };
-type TermNode = CallNode | LiteralNode | IdentifierNode | BlockNode;
+type ListNode = BaseNode & { type: "list"; items: ExpressionNode[] };
+type TermNode = CallNode | LiteralNode | IdentifierNode | BlockNode | ListNode;
 type ExpressionNode = CommentNode | AssignmentNode | FunctionNode | TermNode;
 type ASTNode = StatementListNode | ExpressionNode;
 
@@ -595,12 +599,35 @@ function parseBlock(state: ParseState): BlockNode {
   });
 }
 
+function parseList(state: ParseState): ListNode {
+  return txn("parseList", state, (state) => {
+    const openBracket = parseOperator(state, { value: "[" });
+    const items: ExpressionNode[] = [];
+    while (state.i < state.tokens.length) {
+      try {
+        items.push(parseExpression(state));
+        parseOperator(state, { value: "," });
+      } catch {
+        debug("[parseList] no comma after element");
+        break;
+      }
+    }
+    const closeBracket = parseOperator(state, { value: "]" });
+    return {
+      type: "list",
+      items,
+      loc: mergeNodeLocations(openBracket.loc, closeBracket.loc),
+    };
+  });
+}
+
 function parseTerm(state: ParseState): TermNode {
   return txn("parseTerm", state, (state) => {
     return parseOneOf(
       state,
       parseCall,
       parseBlock,
+      parseList,
       parseLiteral,
       parseIdentifier,
     );
@@ -717,6 +744,8 @@ function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
           return evalNode(node.body, { globals });
         });
       };
+    case "list":
+      return node.items.map((item) => evalNode(item, state));
     case "identifier":
       return state.globals[node.name];
     case "literal":

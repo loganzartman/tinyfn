@@ -1,0 +1,28 @@
+map = (arr, fn) => {
+  return = [];
+  each(arr, (e) => push(return, fn(e)));
+  return;
+};
+
+filter = (arr, fn) => {
+  return = [];
+  each(arr, (e) => 
+    if(
+      fn(e), 
+      () => push(return, e), 
+      () => {},
+    )
+  );
+  return;
+};
+
+reduce = (arr, fn, init) => {
+  return = init;
+  each(arr, (e) => return = fn(return, e));
+  return;
+};
+
+print(map([1,2,3,4], (i) => i * i));
+print(filter([1,2,3,4], (i) => i > 2));
+print(reduce([1,2,3], (a, i) => a + i, 0));
+

@@ -46,6 +46,8 @@ function main() {
     push: (arr: unknown[], x: unknown) => arr.push(x),
     pop: (arr: unknown[]) => arr.pop(),
     get: (obj: object, k: string | number) => obj[k as keyof typeof obj],
+    each: (arr: unknown[], fn: (x: unknown) => void) => arr.forEach(fn),
+    range: (length: number) => Array.from({ length }, (_, i) => i),
   };
 
   try {

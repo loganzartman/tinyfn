@@ -1,0 +1,10 @@
+pi = 0;
+sign = 1;
+each(range(10000), (i) => {
+  denom = 1 + i * 2;
+  frac = sign / denom;
+  pi = pi + frac;
+  sign = 0 - sign;
+});
+pi = pi * 4;
+print(pi);

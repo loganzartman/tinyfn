@@ -655,6 +655,15 @@ function parseBinop(state: ParseState): CallNode {
   });
 }
 
+function parseParenthesized(state: ParseState): ExpressionNode {
+  return txn("parseParenthesized", state, (state) => {
+    const openParen = parseOperator(state, { value: "(" });
+    const expr = parseExpression(state);
+    const closeParen = parseOperator(state, { value: ")" });
+    return expr;
+  });
+}
+
 function parseExpression(state: ParseState): ExpressionNode {
   return txn("parseExpression", state, (state) => {
     return parseOneOf(
@@ -664,6 +673,7 @@ function parseExpression(state: ParseState): ExpressionNode {
       parseLambda,
       parseBinop,
       parseTerm,
+      parseParenthesized,
     );
   });
 }

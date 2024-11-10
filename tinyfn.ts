@@ -718,6 +718,23 @@ class EvalError extends ErrorWithSource {
   }
 }
 
+function evalInclude(node: CallNode, state: EvalState): unknown {
+  const pathNode = node.args[0];
+  if (!pathNode) {
+    throw new EvalError("include() requires a path argument", node);
+  }
+  const path = evalNode(pathNode, state);
+  if (typeof path !== "string") {
+    throw new EvalError("include() path argument must be a string", pathNode);
+  }
+  const src = fs.readFileSync(path, "utf-8");
+  try {
+    return evalNode(parse({ tokens: tokenize(src) }), state);
+  } catch (e) {
+    throw new EvalError(`Error in included file ${path}:\n${e}`, node);
+  }
+}
+
 function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
   switch (node.type) {
     case "comment":
@@ -729,7 +746,11 @@ function evalNode(node: ASTNode, state: EvalState = { globals: {} }): unknown {
     case "statementList":
       return node.statements.map((s) => evalNode(s, state)).at(-1);
     case "call":
-      const fn = state.globals[node.name.name];
+      const name = node.name.name;
+      if (name === "include") {
+        return evalInclude(node, state);
+      }
+      const fn = state.globals[name];
       if (typeof fn !== "function") {
         throw new EvalError(`Cannot call non-function ${node.name.name}`, node);
       }
